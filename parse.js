@@ -513,6 +513,37 @@ function linkTextBadBacktick(t) {
   return (unpaired % 2) !== 0;
 }
 
+// Lengths of backtick runs in t that do not close a code span within t
+// (dangling runs). Marked's emStrong mask lets such a run pair with a
+// later backtick run of the same length outside the link text, forming
+// a phantom code span that hides any emphasis delimiters inside it.
+function danglingBacktickLens(t) {
+  const lens = [];
+  let i = 0;
+  const n = t.length;
+  while (i < n) {
+    const c = t.charCodeAt(i);
+    if (c === 92) { i += 2; continue; }
+    if (c !== 96) { i++; continue; }
+    let m = 0;
+    while (i + m < n && t.charCodeAt(i + m) === 96) m++;
+    let j = i + m;
+    let found = -1;
+    while (j < n) {
+      if (t.charCodeAt(j) === 92) { j += 2; continue; }
+      if (t.charCodeAt(j) === 96) {
+        let r = 0;
+        while (j + r < n && t.charCodeAt(j + r) === 96) r++;
+        if (r === m) { found = j; break; }
+        j += r;
+      } else j++;
+    }
+    if (found >= 0) i = found + m;
+    else { lens.push(m); i += m; }
+  }
+  return lens;
+}
+
 // Find the ']' matching the '[' at s[start]; -1 if none. Skips escaped
 // brackets and code spans, and counts nested brackets.
 function findClosingBracket(s, start) {
@@ -753,19 +784,29 @@ function resolveDelims(nodes) {
           if (o.n > node.n) continue;
           break;
         }
-        if (node.ch !== '~' && !(o.n >= 2 && node.n >= 2)) {
+        if (node.ch !== '~') {
           const list = bothByCh[node.ch];
           if (list) {
             let blocked = false;
+            let blockRec = null;
             for (let b = 0; b < list.length; b++) {
               const rec = list[b];
-              if (rec.seq >= (o.gen || 0) && o.n % 3 !== 0 && ((o.n + rec.len) % 3 === 0)) { blocked = true; break; }
+              // A record spent by an earlier single closer no longer
+              // blocks a strong closer on a strong opener. A strong
+              // closer longer than its strong opener is not blocked
+              // either: it has spare delimiters beyond the pair.
+              if (rec.spent && node.n >= 2 && o.n >= 2) continue;
+              if (node.n > o.n && o.n >= 2 && node.n >= 2) continue;
+              if (rec.seq >= (o.gen || 0) && o.n % 3 !== 0 && ((o.n + rec.len) % 3 === 0)) { blocked = true; blockRec = rec; break; }
             }
             // A strong closer (n>=2) blocked on a single opener falls
-            // through to an earlier strong opener instead of stopping;
-            // otherwise the outer ** never pairs.
+            // through to an earlier strong opener only when that opener
+            // was already refused for an earlier closer; a first
+            // refusal stops the search.
             if (blocked) {
-              if (node.n >= 2 && o.n === 1) continue;
+              if (node.n === 1 && blockRec) blockRec.spent = true;
+              if (node.n >= 2 && o.n === 1 && refused.has(o)) continue;
+              refused.add(o);
               break;
             }
           }
@@ -1119,6 +1160,25 @@ function scanInline(s, refs) {
         nodes.push({ t: 'img', href: encodeHref(href), alt: escAttr(plainInline(linkText, refs)), title: title === null ? null : escAttr(title) });
       } else {
         nodes.push({ t: 'link', href: encodeHref(href), title: title === null ? null : escAttr(title), text: linkText });
+      }
+      // A dangling backtick run in the link text pairs in marked's mask
+      // with the next same-length run after the link, hiding emphasis
+      // delimiters between the link and that run (phantom code span).
+      {
+        const dl = danglingBacktickLens(linkText);
+        for (let q = 0; q < dl.length; q++) {
+          const L = dl[q];
+          let p = end;
+          while (p < n) {
+            if (s.charCodeAt(p) === 92) { p += 2; continue; }
+            if (s.charCodeAt(p) === 96) {
+              let r = 0;
+              while (p + r < n && s.charCodeAt(p + r) === 96) r++;
+              if (r === L) { if (suppressDelimsUntil < p) suppressDelimsUntil = p; break; }
+              p += r;
+            } else p++;
+          }
+        }
       }
       i = end;
       continue;
@@ -2012,6 +2072,7 @@ function tryParseDefs(lines, i, i1, refs) {
 // input and the input had no final newline.
 function parseHtmlBlock(lines, i, i1, ctx, hb) {
   let j = i;
+  let endsAtBlank = false;
   if (hb.type === 1) {
     const endRe = '</' + hb.endTag;
     while (j < i1) {
@@ -2045,12 +2106,15 @@ function parseHtmlBlock(lines, i, i1, ctx, hb) {
   } else {
     j = i;
     while (j < i1 && !isBlank(lines[j])) j++;
+    endsAtBlank = j < i1;
   }
   let text = lines.slice(i, j).join('\n');
   // A trailing newline is added only when the next line in the same
-  // container is not blank. A tab-only line IS blank (isBlank), so no
-  // newline follows it; isSpacesOnly would wrongly treat it as content.
-  if (j < i1 && !isBlank(lines[j])) text += '\n';
+  // container is not blank. A tab-only line counts as content here
+  // (it is not spaces-only), so a newline follows it; a spaces-only
+  // or empty line does not get one. But a type 6/7 block ends AT a
+  // blank line, so that blank line never earns a newline.
+  if (j < i1 && !endsAtBlank && !isSpacesOnly(lines[j])) text += '\n';
   else if (j >= i1 && ctx.tailNL) text += '\n';
   return { text, end: j };
 }
@@ -2458,7 +2522,10 @@ function parseBlocks(lines, i0, i1, ctx) {
               }
             }
           }
-          codeLines.push(stripCols(l2, ind));
+          // A backtick fence strips up to its own indent from content
+          // lines; a tilde fence does not strip any indent (marked
+          // keeps the content's leading whitespace verbatim).
+          codeLines.push(stripCols(l2, fence.ch === 96 ? ind : 0));
           j++;
         }
         const infoStr = fence.info.replace(/^[ \t]+/, '');
