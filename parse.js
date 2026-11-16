@@ -784,20 +784,27 @@ function resolveDelims(nodes) {
           if (o.n > node.n) continue;
           break;
         }
+        let fContrib = false;
         if (node.ch !== '~') {
           const list = bothByCh[node.ch];
           if (list) {
             let blocked = false;
             let blockRec = null;
+            // A record that would block but is skipped by a strong-strong
+            // exception means marked's scan skipped that inner BOTH
+            // delimiter (rule of three), raising its `f` accumulator, so
+            // the effective closer length grows and any spare delimiters
+            // land INSIDE the wrapper (M.slice) rather than after it.
             for (let b = 0; b < list.length; b++) {
               const rec = list[b];
+              const wouldBlock = rec.seq >= (o.gen || 0) && o.n % 3 !== 0 && ((o.n + rec.len) % 3 === 0);
               // A record spent by an earlier single closer no longer
               // blocks a strong closer on a strong opener. A strong
               // closer longer than its strong opener is not blocked
               // either: it has spare delimiters beyond the pair.
-              if (rec.spent && node.n >= 2 && o.n >= 2) continue;
-              if (node.n > o.n && o.n >= 2 && node.n >= 2) continue;
-              if (rec.seq >= (o.gen || 0) && o.n % 3 !== 0 && ((o.n + rec.len) % 3 === 0)) { blocked = true; blockRec = rec; break; }
+              if (rec.spent && node.n >= 2 && o.n >= 2) { if (wouldBlock) fContrib = true; continue; }
+              if (node.n > o.n && o.n >= 2 && node.n >= 2) { if (wouldBlock) fContrib = true; continue; }
+              if (wouldBlock) { blocked = true; blockRec = rec; break; }
             }
             // A strong closer (n>=2) blocked on a single opener falls
             // through to an earlier strong opener only when that opener
@@ -833,7 +840,11 @@ function resolveDelims(nodes) {
         replacement.push(wrapper);
         if (node.n > use) {
           newD = { t: 'd', ch: node.ch, n: node.n - use, o: node.o, c: node.c };
-          replacement.push(newD);
+          // Spare delimiters land inside the wrapper when marked's `f`
+          // accumulator grew (a bothByCh record was skipped above);
+          // otherwise they stay after the wrapper.
+          if (fContrib) children.push(newD);
+          else replacement.push(newD);
         }
         nodes.splice(oIdx, dIdx - oIdx + 1, ...replacement);
         openers.splice(sIdx, 1);
