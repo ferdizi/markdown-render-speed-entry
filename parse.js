@@ -1375,9 +1375,12 @@ function scanInline(s, refs) {
               }
             }
             const dom = afterScheme.slice(0, domEnd);
-            // www/http/ftp domains need no dot and allow _ and a trailing -;
-            // only empty labels (a doubled or leading dot) disqualify.
-            if (isValidDomain(dom, true)) {
+            // A domain ending in dots is still valid when a path
+            // character follows (e.g. https://example.com.\): the
+            // dots are part of the domain, not trailing punctuation.
+            // Validate the domain with trailing dots removed.
+            const domCheck = dom.replace(/\.+$/, '');
+            if (isValidDomain(domCheck, true)) {
               flush();
               nodes.push({ t: 'link', href: encodeHref(scheme + url), title: null, text: url, plain: true });
               i += url.length;
@@ -2292,6 +2295,11 @@ function parseList(lines, i, i1, ctx) {
     // lines are code: they take the content-indent strip only and never
     // count as paragraph text (paraPrefixOf cannot see fences).
     let fence = null;
+    // itemLines length right after the fence opener is pushed; a
+    // below-indent line while the fence has no content yet ends the
+    // fence (empty) and the item, but once content exists the line is
+    // still code.
+    let fenceStartLen = -1;
     if (!ci.empty) {
       const pp = paraPrefixOf(ci.firstContent, false);
       inPara = pp.inPara;
@@ -2365,6 +2373,7 @@ function parseList(lines, i, i1, ctx) {
         if (fm) {
           fence = { ch: fm.ch, len: fm.len };
           itemLines.push(strippedCI);
+          fenceStartLen = itemLines.length;
           inPara = false;
           paraPrefix = '';
           k++;
@@ -2401,8 +2410,10 @@ function parseList(lines, i, i1, ctx) {
       if (lm2) break;
       if (interruptsPara(l2)) break;
       if (fence) {
-        // A fence code line below the content indent is still code:
-        // strip what indent it has and never re-prefix it.
+        // A non-blank fence line below the content indent ends the
+        // item only while the fence has no content yet (it stays
+        // empty); once content exists the line is still code.
+        if (itemLines.length === fenceStartLen) break;
         const codeLine = stripCols(l2, Math.min(i2.indent, ci.contentIndent));
         const cInfo = indentInfo(codeLine);
         const cfm = cInfo.indent <= 3 ? matchFence(codeLine, cInfo.idx) : null;
