@@ -546,6 +546,9 @@ function findClosingBracket(s, start) {
       let j = i + m;
       let found = -1;
       while (j < n) {
+        // A ']' at depth 0 closes the link, so a code span whose closer
+        // lies past it cannot swallow that bracket.
+        if (depth === 0 && s.charCodeAt(j) === 93) break;
         if (s.charCodeAt(j) === 96) {
           let r = 0;
           while (j + r < n && s.charCodeAt(j + r) === 96) r++;
@@ -682,11 +685,17 @@ function trimExtUrl(u) {
       continue;
     }
     if (last === 41) {
+      // A trailing ')' is dropped while ')' outnumber '(' — but a ')'
+      // immediately followed by ']' is a stray that does not take part
+      // in balancing (it belongs to the preceding ']' segment, as in
+      // https://a.com)](https://b.com) where the final ')' balances
+      // the '(' after the ']').
       let open = 0;
       let close = 0;
       for (let k = 0; k < u.length; k++) {
-        if (u.charCodeAt(k) === 40) open++;
-        else if (u.charCodeAt(k) === 41) close++;
+        const c = u.charCodeAt(k);
+        if (c === 40) open++;
+        else if (c === 41 && u.charCodeAt(k + 1) !== 93) close++;
       }
       if (close > open) {
         u = u.slice(0, -1);
@@ -717,6 +726,10 @@ function resolveDelims(nodes) {
   // at, in `gen`.
   const bothByCh = Object.create(null);
   let bothSeq = 0;
+  // Openers already refused by the both-closer rule for an earlier
+  // closer: a later strong closer may fall through them, but a first
+  // refusal stops the search.
+  const refused = new Set();
   while (i < nodes.length) {
     const node = nodes[i];
     if (node.t !== 'd') {
@@ -748,7 +761,13 @@ function resolveDelims(nodes) {
               const rec = list[b];
               if (rec.seq >= (o.gen || 0) && o.n % 3 !== 0 && ((o.n + rec.len) % 3 === 0)) { blocked = true; break; }
             }
-            if (blocked) break;
+            // A strong closer (n>=2) blocked on a single opener falls
+            // through to an earlier strong opener instead of stopping;
+            // otherwise the outer ** never pairs.
+            if (blocked) {
+              if (node.n >= 2 && o.n === 1) continue;
+              break;
+            }
           }
         }
         let use = o.n >= 2 && node.n >= 2 ? 2 : 1;
@@ -1262,13 +1281,24 @@ function scanInline(s, refs) {
         if (boundary) {
           let j = i;
           while (j < n && !isSpace(s.charCodeAt(j)) && s.charCodeAt(j) !== 60) j++;
-          const url = trimExtUrl(s.slice(i, j));
+          // A '(' with no ')' after it in the candidate ends the URL
+          // (the '(' starts nothing balanced, e.g.
+          // https://a.com](https://b.com with no close). A '(' that
+          // does have a later ')' stays part of the URL.
+          let cand = s.slice(i, j);
+          const op = cand.indexOf('(');
+          if (op >= 0 && cand.indexOf(')', op) < 0) cand = cand.slice(0, op);
+          const url = trimExtUrl(cand);
           if (url.length > 0) {
             const afterScheme = scheme === 'http://' ? url.slice(4) : url.slice(url.indexOf('://') + 3);
+            // The domain ends at the first character that cannot be in
+            // a domain (alphanumeric, '-', '.', '_'). Trailing URL
+            // characters such as ']' or ')' stay in the link text/href
+            // (marked links them) but must not poison the domain check.
             let domEnd = afterScheme.length;
             for (let k = 0; k < afterScheme.length; k++) {
               const c = afterScheme.charCodeAt(k);
-              if (c === 47 || c === 63 || c === 35 || c === 92) {
+              if (!isAlphaNum(c) && c !== 45 && c !== 46 && c !== 95) {
                 domEnd = k;
                 break;
               }
