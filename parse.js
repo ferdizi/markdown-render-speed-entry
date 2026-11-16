@@ -479,6 +479,7 @@ function parseAutolinkAt(s, i) {
 function linkTextBadBacktick(t) {
   let i = 0;
   const n = t.length;
+  let unpaired = 0;
   while (i < n) {
     const c = t.charCodeAt(i);
     if (c === 92) { i += 2; continue; }
@@ -496,16 +497,20 @@ function linkTextBadBacktick(t) {
         j += r;
       } else j++;
     }
-    if (found < 0) return true;
-    let hasInner = false;
-    for (let k = i + m; k < found; k++) {
-      if (t.charCodeAt(k) === 92) { k++; continue; }
-      if (t.charCodeAt(k) === 96) { hasInner = true; break; }
+    if (found >= 0) {
+      let hasInner = false;
+      for (let k = i + m; k < found; k++) {
+        if (t.charCodeAt(k) === 92) { k++; continue; }
+        if (t.charCodeAt(k) === 96) { hasInner = true; break; }
+      }
+      if (hasInner && found + m < n) return true;
+      i = found + m;
+    } else {
+      unpaired++;
+      i += m;
     }
-    if (hasInner && found + m < n) return true;
-    i = found + m;
   }
-  return false;
+  return (unpaired % 2) !== 0;
 }
 
 // Find the ']' matching the '[' at s[start]; -1 if none. Skips escaped
