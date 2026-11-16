@@ -1574,6 +1574,22 @@ function stripColsFlat(line, n) {
   return ' '.repeat(col - n) + line.slice(i);
 }
 
+// Strip `n` columns of fence indent from a code content line the way
+// marked does: each leading whitespace character (space or tab) counts
+// as exactly one column, so a tab that starts inside the strip region
+// is removed whole and counts as one, never leaving remainder spaces.
+// (Unlike stripCols, which expands a straddling tab to its remainder.)
+function stripFenceCols(line, n) {
+  let i = 0;
+  let c = 0;
+  while (i < line.length && c < n) {
+    const ch = line.charCodeAt(i);
+    if (ch === 32 || ch === 9) { i++; c++; }
+    else break;
+  }
+  return line.slice(i);
+}
+
 function matchAtx(line, idx) {
   let j = idx;
   while (j < line.length && line.charCodeAt(j) === 35) j++;
@@ -2124,11 +2140,11 @@ function parseHtmlBlock(lines, i, i1, ctx, hb) {
   }
   let text = lines.slice(i, j).join('\n');
   // A trailing newline is added only when the next line in the same
-  // container is not blank. A tab-only line counts as content here
-  // (it is not spaces-only), so a newline follows it; a spaces-only
-  // or empty line does not get one. But a type 6/7 block ends AT a
-  // blank line, so that blank line never earns a newline.
-  if (j < i1 && !endsAtBlank && !isSpacesOnly(lines[j])) text += '\n';
+  // container is not empty. A spaces-only or tab-only line counts as
+  // content here (it is not empty), so a newline follows it; a truly
+  // empty line does not get one. But a type 6/7 block ends AT a blank
+  // line, so that blank line never earns a newline.
+  if (j < i1 && !endsAtBlank && lines[j].length > 0) text += '\n';
   else if (j >= i1 && ctx.tailNL) text += '\n';
   return { text, end: j };
 }
@@ -2547,7 +2563,7 @@ function parseBlocks(lines, i0, i1, ctx) {
           // A backtick fence strips up to its own indent from content
           // lines; a tilde fence does not strip any indent (marked
           // keeps the content's leading whitespace verbatim).
-          codeLines.push(stripCols(l2, fence.ch === 96 ? ind : 0));
+          codeLines.push(stripFenceCols(l2, fence.ch === 96 ? ind : 0));
           j++;
         }
         const infoStr = fence.info.replace(/^[ \t]+/, '');
