@@ -2307,6 +2307,12 @@ function parseList(lines, i, i1, ctx) {
     const lazy = new Set();
     let inPara = false;
     let paraPrefix = '';
+    // Indent (in source coordinates) of the most recent nested list
+    // marker seen in this item; -1 when not inside a nested list.
+    // Lines inside a nested list never take the +4 paragraph strip:
+    // that strip belongs to this item's own paragraph, and the nested
+    // list's own parser handles its content indent.
+    let nestedIndent = -1;
     // Open fenced code block inside this item, if any. While set, the
     // lines are code: they take the content-indent strip only and never
     // count as paragraph text (paraPrefixOf cannot see fences).
@@ -2401,9 +2407,20 @@ function parseList(lines, i, i1, ctx) {
         // paragraph continuation absorbs as text); any other line is
         // stripped by the content indent only and re-parsed as a block.
         // A list marker line starts a nested list, never a paragraph
-        // continuation, so it never takes the extra four columns.
+        // continuation, so it never takes the extra four columns. The
+        // extra four also never apply inside a nested container: a
+        // paragraph open only inside a nested list/quote is not this
+        // item's own paragraph (paraPrefix non-empty), and a line
+        // inside a nested list (nestedIndent set) is the nested
+        // list's own content.
         const isMarker = matchListMarker(l2, i2.idx) !== null;
-        const stripN = inPara && !isMarker && i2.indent >= ci.contentIndent + 4 ? ci.contentIndent + 4 : ci.contentIndent;
+        if (isMarker) nestedIndent = i2.indent;
+        else if (nestedIndent >= 0 && i2.indent < nestedIndent) nestedIndent = -1;
+        // The +4 threshold uses the leading-whitespace character count
+        // (i2.idx), not the column indent: a tab counts as one here, so
+        // a tab-indented line does not spuriously reach the threshold
+        // and lose its following spaces (doc-28: `\t  "key"` keeps 2).
+        const stripN = inPara && paraPrefix === '' && nestedIndent < 0 && !isMarker && i2.idx >= ci.contentIndent + 4 ? ci.contentIndent + 4 : ci.contentIndent;
         const stripped = stripN === ci.contentIndent ? strippedCI : stripColsFlat(l2, stripN);
         itemLines.push(stripped);
         const pp = paraPrefixOf(stripped, inPara);
